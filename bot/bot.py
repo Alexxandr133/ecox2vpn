@@ -1,13 +1,11 @@
 import asyncio
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
-
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
 BOT_TOKEN = "8763449387:AAHM023uMjJyoLOhSM_GLcMi1j9eFuNC4D8"
-WEB_APP_URL = "http://127.0.0.1:8000/"
+WEB_APP_URL = "https://ecox2vpn.online/"
 
 
 async def main() -> None:
@@ -19,15 +17,26 @@ async def main() -> None:
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message) -> None:
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [
+                    KeyboardButton(
+                        text="Открыть VPN панель",
+                        web_app=WebAppInfo(url=WEB_APP_URL),
+                    )
+                ]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+        )
         await message.answer(
-            "Привет! Я VPN‑бот.\n\n"
-            "• Команда /app — показать ссылку на локальную веб‑панель.\n"
-            "• Позже здесь появится выдача ключей VLESS/VMess."
+            "Привет! Нажми кнопку ниже, чтобы открыть веб‑панель VPN.",
+            reply_markup=keyboard,
         )
 
     @dp.message(Command("app"))
     async def cmd_app(message: Message) -> None:
-        await message.answer(f"Локальная веб‑панель сейчас доступна по адресу:\n{WEB_APP_URL}")
+        await message.answer(f"Веб‑панель доступна по адресу:\n{WEB_APP_URL}")
 
     await dp.start_polling(bot)
 
