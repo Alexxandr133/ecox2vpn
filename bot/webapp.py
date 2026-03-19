@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import parse_qsl
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,7 +31,7 @@ if os.path.isdir(STATIC_DIR):
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(BASE_DIR), ".env"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "https://ecox2vpn.online/")
@@ -342,7 +342,7 @@ async def index(request: Request):
     )
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request, credentials: HTTPBasicCredentials = security):
+async def admin_page(request: Request, credentials: HTTPBasicCredentials = Depends(security)):
     _require_admin_basic(credentials)
     return templates.TemplateResponse(
         "admin.html",
@@ -421,7 +421,7 @@ async def api_vpn_create(payload: dict[str, Any]):
 
 
 @app.post("/api/admin/users")
-async def api_admin_users(credentials: HTTPBasicCredentials = security):
+async def api_admin_users(credentials: HTTPBasicCredentials = Depends(security)):
     _require_admin_basic(credentials)
     _ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
@@ -454,7 +454,7 @@ async def api_admin_users(credentials: HTTPBasicCredentials = security):
 
 
 @app.post("/api/admin/user/disable")
-async def api_admin_disable(payload: dict[str, Any], credentials: HTTPBasicCredentials = security):
+async def api_admin_disable(payload: dict[str, Any], credentials: HTTPBasicCredentials = Depends(security)):
     _require_admin_basic(credentials)
     tg_id = int(payload.get("tg_id") or 0)
     reason = str(payload.get("reason") or "").strip()[:200]
@@ -474,7 +474,7 @@ async def api_admin_disable(payload: dict[str, Any], credentials: HTTPBasicCrede
 
 
 @app.post("/api/admin/user/enable")
-async def api_admin_enable(payload: dict[str, Any], credentials: HTTPBasicCredentials = security):
+async def api_admin_enable(payload: dict[str, Any], credentials: HTTPBasicCredentials = Depends(security)):
     _require_admin_basic(credentials)
     tg_id = int(payload.get("tg_id") or 0)
     if tg_id <= 0:
@@ -490,7 +490,7 @@ async def api_admin_enable(payload: dict[str, Any], credentials: HTTPBasicCreden
 
 
 @app.post("/api/admin/user/revoke_key")
-async def api_admin_revoke_key(payload: dict[str, Any], credentials: HTTPBasicCredentials = security):
+async def api_admin_revoke_key(payload: dict[str, Any], credentials: HTTPBasicCredentials = Depends(security)):
     _require_admin_basic(credentials)
     tg_id = int(payload.get("tg_id") or 0)
     if tg_id <= 0:

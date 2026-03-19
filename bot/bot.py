@@ -1,15 +1,189 @@
 import asyncio
+import json
+import os
+import sqlite3
+import subprocess
+import time
+import uuid
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from aiogram.types import Message
 from dotenv import load_dotenv
-import os
 
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+DB_PATH = os.path.join(DATA_DIR, "app.db")
+
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "https://ecox2vpn.online/")
+VLESS_HOST = os.getenv("VLESS_HOST", "ecox2vpn.online")
+VLESS_PORT = int(os.getenv("VLESS_PORT", "4433"))
+VLESS_TRANSPORT = os.getenv("VLESS_TRANSPORT", "tcp")
+VLESS_TLS = os.getenv("VLESS_TLS", "none")
+XRAY_CONFIG_PATH = os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json")
+XRAY_SYSTEMD_SERVICE = os.getenv("XRAY_SYSTEMD_SERVICE", "xray")
+
+
+def ensure_db() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                tg_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                photo_url TEXT,
+                created_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                disabled INTEGER NOT NULL DEFAULT 0,
+                disabled_at INTEGER,
+                disabled_reason TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                tg_id INTEGER PRIMARY KEY,
+                uuid TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+
+
+def upsert_user(message: Message) -> None:
+    ensure_db()
+    u = message.from_user
+    if not u:
+        return
+    now = int(time.time())
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO users (tg_id, username, first_name, last_name, photo_url, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tg_id) DO UPDATE SET
+                username=excluded.username,
+                first_name=excluded.first_name,
+                last_name=excluded.last_name,
+                photo_url=excluded.photo_url,
+                last_seen_at=excluded.last_seen_at
+            """,
+            (
+                int(u.id),
+                u.username,
+                u.first_name,
+                u.last_name,
+                None,
+                now,
+                now,
+            ),
+        )
+
+
+def get_user_disabled(tg_id: int) -> tuple[bool, str | None]:
+    ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT disabled, disabled_reason FROM users WHERE tg_id = ?",
+            (tg_id,),
+        ).fetchone()
+    if not row:
+        return False, None
+    return bool(row[0]), row[1]
+
+
+def get_subscription(tg_id: int) -> dict | None:
+    ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT uuid, created_at, updated_at FROM subscriptions WHERE tg_id = ?",
+            (tg_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"uuid": row[0], "created_at": row[1], "updated_at": row[2]}
+
+
+def set_subscription(tg_id: int, sub_uuid: str) -> None:
+    ensure_db()
+    now = int(time.time())
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO subscriptions (tg_id, uuid, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(tg_id) DO UPDATE SET
+                uuid=excluded.uuid,
+                updated_at=excluded.updated_at
+            """,
+            (tg_id, sub_uuid, now, now),
+        )
+
+
+def delete_subscription(tg_id: int) -> None:
+    ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM subscriptions WHERE tg_id = ?", (tg_id,))
+
+
+def build_vless_uri(sub_uuid: str) -> str:
+    params = []
+    if VLESS_TLS and VLESS_TLS != "none":
+        params.append(f"security={VLESS_TLS}")
+    params.append("encryption=none")
+    params.append(f"type={VLESS_TRANSPORT}")
+    return f"vless://{sub_uuid}@{VLESS_HOST}:{VLESS_PORT}?{'&'.join(params)}#ecox2vpn"
+
+
+def xray_add_client(sub_uuid: str, email: str) -> None:
+    with open(XRAY_CONFIG_PATH, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    inbounds = cfg.get("inbounds") or []
+    vless = next((x for x in inbounds if x.get("protocol") == "vless"), None)
+    if not vless:
+        raise RuntimeError("No VLESS inbound found in xray config")
+    settings = vless.setdefault("settings", {})
+    clients = settings.setdefault("clients", [])
+    if not any(c.get("id") == sub_uuid for c in clients):
+        clients.append({"id": sub_uuid, "email": email})
+    tmp = XRAY_CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, XRAY_CONFIG_PATH)
+    subprocess.run(["systemctl", "reload", XRAY_SYSTEMD_SERVICE], check=False)
+    subprocess.run(["systemctl", "restart", XRAY_SYSTEMD_SERVICE], check=False)
+
+
+def xray_remove_client(sub_uuid: str) -> None:
+    with open(XRAY_CONFIG_PATH, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    changed = False
+    for ib in cfg.get("inbounds") or []:
+        if ib.get("protocol") != "vless":
+            continue
+        settings = ib.get("settings") or {}
+        clients = settings.get("clients") or []
+        new_clients = [c for c in clients if c.get("id") != sub_uuid]
+        if len(new_clients) != len(clients):
+            settings["clients"] = new_clients
+            ib["settings"] = settings
+            changed = True
+    if changed:
+        tmp = XRAY_CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, XRAY_CONFIG_PATH)
+        subprocess.run(["systemctl", "reload", XRAY_SYSTEMD_SERVICE], check=False)
+        subprocess.run(["systemctl", "restart", XRAY_SYSTEMD_SERVICE], check=False)
 
 
 async def main() -> None:
@@ -21,26 +195,78 @@ async def main() -> None:
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message) -> None:
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [
-                    KeyboardButton(
-                        text="Открыть VPN панель",
-                        web_app=WebAppInfo(url=WEB_APP_URL),
-                    )
-                ]
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=False,
-        )
+        upsert_user(message)
         await message.answer(
-            "Привет! Нажми кнопку ниже, чтобы открыть веб‑панель VPN.",
-            reply_markup=keyboard,
+            "Добро пожаловать в ecox2vpn.\n\n"
+            "Команды:\n"
+            "/vpn — создать или получить твой VPN‑ключ\n"
+            "/mykey — показать текущий ключ\n"
+            "/revoke — удалить текущий ключ\n"
+            "/app — открыть личный кабинет"
         )
 
     @dp.message(Command("app"))
     async def cmd_app(message: Message) -> None:
-        await message.answer(f"Веб‑панель доступна по адресу:\n{WEB_APP_URL}")
+        upsert_user(message)
+        await message.answer(f"Личный кабинет:\n{WEB_APP_URL}")
+
+    @dp.message(Command("mykey"))
+    async def cmd_mykey(message: Message) -> None:
+        upsert_user(message)
+        if not message.from_user:
+            return
+        tg_id = int(message.from_user.id)
+        disabled, reason = get_user_disabled(tg_id)
+        if disabled:
+            await message.answer(f"Доступ отключён администратором.\n{reason or ''}".strip())
+            return
+        sub = get_subscription(tg_id)
+        if not sub:
+            await message.answer("У тебя пока нет ключа. Используй команду /vpn.")
+            return
+        await message.answer(f"Твой VPN‑ключ:\n{build_vless_uri(sub['uuid'])}")
+
+    @dp.message(Command("vpn"))
+    async def cmd_vpn(message: Message) -> None:
+        upsert_user(message)
+        if not message.from_user:
+            return
+        tg_id = int(message.from_user.id)
+        disabled, reason = get_user_disabled(tg_id)
+        if disabled:
+            await message.answer(f"Доступ отключён администратором.\n{reason or ''}".strip())
+            return
+        sub = get_subscription(tg_id)
+        if sub:
+            await message.answer(f"Твой VPN‑ключ:\n{build_vless_uri(sub['uuid'])}")
+            return
+        new_uuid = str(uuid.uuid4())
+        try:
+            email = message.from_user.username or f"tg:{tg_id}"
+            xray_add_client(new_uuid, str(email))
+            set_subscription(tg_id, new_uuid)
+        except Exception as e:
+            await message.answer(f"Не удалось создать ключ. Попробуй позже.\nТех. ошибка: {e}")
+            return
+        await message.answer(f"Готово. Твой VPN‑ключ:\n{build_vless_uri(new_uuid)}")
+
+    @dp.message(Command("revoke"))
+    async def cmd_revoke(message: Message) -> None:
+        upsert_user(message)
+        if not message.from_user:
+            return
+        tg_id = int(message.from_user.id)
+        sub = get_subscription(tg_id)
+        if not sub:
+            await message.answer("У тебя нет активного ключа.")
+            return
+        try:
+            xray_remove_client(sub["uuid"])
+            delete_subscription(tg_id)
+        except Exception as e:
+            await message.answer(f"Не удалось удалить ключ.\nТех. ошибка: {e}")
+            return
+        await message.answer("Ключ удалён. Чтобы получить новый, используй /vpn.")
 
     await dp.start_polling(bot)
 

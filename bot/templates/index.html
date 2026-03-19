@@ -332,7 +332,7 @@
           Загружаем данные…
         </div>
         <div class="hero-tagline" id="statusLine">
-          Авторизация через Telegram WebApp
+          Личный кабинет ecox2vpn
         </div>
       </section>
 
@@ -369,7 +369,7 @@
           <button class="btn-small" id="shareBtn" type="button">Поделиться</button>
         </div>
         <div class="note" id="note">
-          Ключ привязан к твоему Telegram‑аккаунту. Если кнопки не работают — открой панель через кнопку бота, не в обычном браузере.
+          Ключ привязан к твоему Telegram‑аккаунту.
         </div>
       </section>
 
@@ -416,9 +416,9 @@
     async function loadMe() {
       try {
         if (!tg) {
-          hello.textContent = "Открой панель через Telegram (WebApp).";
-          statusLine.textContent = "Нет Telegram WebApp контекста";
-          note.textContent = "Эта страница должна открываться из Telegram. Иначе сервер не сможет подтвердить авторизацию.";
+          hello.textContent = "Вход через Telegram не выполнен";
+          statusLine.textContent = "Открой кабинет из приложения Telegram";
+          note.textContent = "Для безопасности ключи выдаются только авторизованным пользователям Telegram.";
           return;
         }
 
@@ -455,7 +455,7 @@
       } catch (e) {
         statusLine.textContent = "Ошибка авторизации";
         hello.textContent = "Не удалось загрузить данные.";
-        note.textContent = String(e && e.message ? e.message : e);
+        note.textContent = "Не удалось авторизоваться. Проверь вход в Telegram и попробуй снова.";
       }
     }
 
@@ -466,7 +466,7 @@
         keyEl.value = data.vless_uri;
         subLine.textContent = data.existing ? "Ключ уже был создан" : "Ключ создан";
       } catch (e) {
-        note.textContent = String(e && e.message ? e.message : e);
+        note.textContent = "Не удалось создать ключ. Попробуй ещё раз через пару секунд.";
       } finally {
         setBusy(false);
       }
