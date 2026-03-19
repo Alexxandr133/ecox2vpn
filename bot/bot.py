@@ -3,14 +3,18 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from dotenv import load_dotenv
+import os
 
-BOT_TOKEN = "8763449387:AAHM023uMjJyoLOhSM_GLcMi1j9eFuNC4D8"
-WEB_APP_URL = "https://ecox2vpn.online/"
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "https://ecox2vpn.online/")
 
 
 async def main() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("Укажи токен бота в BOT_TOKEN")
+        raise RuntimeError("Missing BOT_TOKEN (set in .env or env var)")
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()

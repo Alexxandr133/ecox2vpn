@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VPN панель</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -256,6 +257,52 @@
       background: rgba(15, 23, 42, 0.9);
       font-size: 10px;
     }
+
+    .keybox {
+      padding: 10px 11px;
+      border-radius: 14px;
+      background: rgba(2, 6, 23, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .keybox textarea {
+      width: 100%;
+      min-height: 92px;
+      resize: none;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      padding: 10px;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.35;
+      outline: none;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-small {
+      flex: 1;
+      padding: 9px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.75);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .note {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
   </style>
 </head>
 <body>
@@ -281,11 +328,11 @@
         <div class="hero-title">
           Твой <span>VPN‑кабинет</span> в Telegram
         </div>
-        <div class="hero-sub">
-          Здесь появятся твои VPN‑подключения, ключи и статистика. Пока это демо‑панель, но логика будет именно здесь.
+        <div class="hero-sub" id="hello">
+          Загружаем данные…
         </div>
-        <div class="hero-tagline">
-          Дальше добавим авторизацию по Telegram и выдачу VLESS/VMess.
+        <div class="hero-tagline" id="statusLine">
+          Авторизация через Telegram WebApp
         </div>
       </section>
 
@@ -293,39 +340,163 @@
         <div class="card">
           <div class="card-main">
             <div class="card-label">Статус сервера</div>
-            <div class="card-value">Онлайн • 1 активный узел</div>
+            <div class="card-value">Онлайн • ecox2vpn.online</div>
           </div>
           <div class="pill-soft">
-            VLESS / VMess ready
+            VLESS ready
           </div>
         </div>
 
         <div class="card">
           <div class="card-main">
-            <div class="card-label">Твоя учётка</div>
-            <div class="card-value">Авторизация через Telegram WebApp</div>
+            <div class="card-label">Твой доступ</div>
+            <div class="card-value" id="subLine">Нет активного ключа</div>
           </div>
           <div class="pill-soft">
-            Скоро: личные ключи
+            UUID • VLESS
           </div>
         </div>
       </section>
 
-      <section class="actions">
-        <button class="btn-primary" type="button">
-          🔑 Сгенерировать VPN‑подключение
-        </button>
-        <button class="btn-secondary" type="button">
-          📋 Пока без подписок — вернёмся к этому позже
-        </button>
+      <section class="keybox">
+        <div class="card-label">VLESS‑ключ</div>
+        <textarea id="key" readonly placeholder="Нажми «Создать VPN‑ключ», чтобы получить подключение."></textarea>
+        <div class="row">
+          <button class="btn-primary" id="createBtn" type="button">Создать VPN‑ключ</button>
+        </div>
+        <div class="row">
+          <button class="btn-small" id="copyBtn" type="button">Копировать</button>
+          <button class="btn-small" id="shareBtn" type="button">Поделиться</button>
+        </div>
+        <div class="note" id="note">
+          Ключ привязан к твоему Telegram‑аккаунту. Если кнопки не работают — открой панель через кнопку бота, не в обычном браузере.
+        </div>
       </section>
 
       <div class="footer">
-        <span>Это макет панели. Функции добавим по шагам.</span>
-        <span class="footer-pill">MVP • v0.1</span>
+        <span id="footerLeft">ecox2vpn.online</span>
+        <span class="footer-pill">v1</span>
       </div>
     </div>
   </div>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    const hello = document.getElementById("hello");
+    const statusLine = document.getElementById("statusLine");
+    const subLine = document.getElementById("subLine");
+    const keyEl = document.getElementById("key");
+    const createBtn = document.getElementById("createBtn");
+    const copyBtn = document.getElementById("copyBtn");
+    const shareBtn = document.getElementById("shareBtn");
+    const note = document.getElementById("note");
+
+    function setBusy(isBusy) {
+      createBtn.disabled = isBusy;
+      createBtn.style.opacity = isBusy ? "0.7" : "1";
+    }
+
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || "Request failed");
+      }
+      return data;
+    }
+
+    function safeInitData() {
+      return tg ? (tg.initData || "") : "";
+    }
+
+    async function loadMe() {
+      try {
+        if (!tg) {
+          hello.textContent = "Открой панель через Telegram (WebApp).";
+          statusLine.textContent = "Нет Telegram WebApp контекста";
+          note.textContent = "Эта страница должна открываться из Telegram. Иначе сервер не сможет подтвердить авторизацию.";
+          return;
+        }
+
+        tg.ready();
+        tg.expand();
+
+        const data = await postJson("/api/me", { initData: safeInitData() });
+        const u = data.user;
+        const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim() || (u.username ? "@" + u.username : "User");
+        hello.textContent = `Привет, ${name}!`;
+
+        if (data.disabled) {
+          statusLine.textContent = "Доступ отключён администратором";
+          subLine.textContent = "Ключ недоступен";
+          keyEl.value = "";
+          createBtn.textContent = "Доступ отключён";
+          createBtn.disabled = true;
+          createBtn.style.opacity = "0.55";
+          note.textContent = data.disabled_reason ? ("Причина: " + data.disabled_reason) : "Обратись в поддержку.";
+          return;
+        }
+
+        if (data.vless_uri) {
+          subLine.textContent = "Ключ активен";
+          keyEl.value = data.vless_uri;
+          createBtn.textContent = "Переиздать (пока не нужно)";
+          createBtn.disabled = true;
+          createBtn.style.opacity = "0.6";
+        } else {
+          subLine.textContent = "Ключ ещё не создан";
+          keyEl.value = "";
+          createBtn.textContent = "Создать VPN‑ключ";
+        }
+      } catch (e) {
+        statusLine.textContent = "Ошибка авторизации";
+        hello.textContent = "Не удалось загрузить данные.";
+        note.textContent = String(e && e.message ? e.message : e);
+      }
+    }
+
+    createBtn.addEventListener("click", async () => {
+      try {
+        setBusy(true);
+        const data = await postJson("/api/vpn/create", { initData: safeInitData() });
+        keyEl.value = data.vless_uri;
+        subLine.textContent = data.existing ? "Ключ уже был создан" : "Ключ создан";
+      } catch (e) {
+        note.textContent = String(e && e.message ? e.message : e);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    copyBtn.addEventListener("click", async () => {
+      const text = keyEl.value || "";
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        note.textContent = "Скопировано в буфер обмена.";
+      } catch {
+        keyEl.select();
+        document.execCommand("copy");
+        note.textContent = "Скопировано.";
+      }
+    });
+
+    shareBtn.addEventListener("click", async () => {
+      const text = keyEl.value || "";
+      if (!text) return;
+      if (tg && tg.openTelegramLink) {
+        tg.openTelegramLink("https://t.me/share/url?url=" + encodeURIComponent(text));
+        return;
+      }
+      note.textContent = "Открой это в Telegram, чтобы поделиться.";
+    });
+
+    loadMe();
+  </script>
 </body>
 </html>
 

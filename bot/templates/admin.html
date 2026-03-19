@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin • ecox2vpn</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050816;
+      --card: rgba(15, 23, 42, 0.92);
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --danger: #fb7185;
+      --ok: #22c55e;
+      --border: rgba(148, 163, 184, 0.18);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, "Roboto", sans-serif; }
+    body {
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #0f172a 0, #020617 45%, #000 100%);
+      color: var(--text);
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .wrap { width: 100%; max-width: 980px; }
+    .top {
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--card);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .title { display: flex; flex-direction: column; gap: 4px; }
+    .title h1 { font-size: 16px; font-weight: 700; }
+    .title p { font-size: 12px; color: var(--muted); }
+    .btn {
+      border: 1px solid var(--border);
+      background: rgba(2, 6, 23, 0.5);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .btn.primary { background: linear-gradient(135deg, #38bdf8, #0ea5e9); color: #0b1120; border: none; font-weight: 700; }
+    .btn.danger { border-color: rgba(251, 113, 133, 0.4); color: #fecdd3; }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .search {
+      flex: 1;
+      min-width: 240px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.75);
+      color: var(--text);
+      outline: none;
+      font-size: 12px;
+    }
+    .hint { font-size: 11px; color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.86);
+    }
+    th, td { padding: 10px 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.12); font-size: 12px; text-align: left; }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    tr:last-child td { border-bottom: none; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(2, 6, 23, 0.5);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .badge.ok { border-color: rgba(34, 197, 94, 0.45); color: #bbf7d0; }
+    .badge.bad { border-color: rgba(251, 113, 133, 0.45); color: #fecdd3; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .note { margin-top: 10px; font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>Admin • ecox2vpn</h1>
+        <p id="me">Загрузка…</p>
+      </div>
+      <button class="btn primary" id="reload">Обновить</button>
+    </div>
+
+    <div class="toolbar">
+      <input class="search" id="q" placeholder="Поиск по tg_id / username / UUID…" />
+      <div class="hint" id="hint">Только админы (ADMIN_TG_IDS).</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>tg_id</th>
+          <th>UUID</th>
+          <th>Статус</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="5">Загрузка…</td></tr>
+      </tbody>
+    </table>
+
+    <div class="note" id="note"></div>
+  </div>
+
+  <script>
+    const rowsEl = document.getElementById("rows");
+    const qEl = document.getElementById("q");
+    const reloadBtn = document.getElementById("reload");
+    const meEl = document.getElementById("me");
+    const noteEl = document.getElementById("note");
+
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Request failed");
+      return data;
+    }
+
+    function userLabel(u) {
+      const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim();
+      if (u.username) return `${name || ""} @${u.username}`.trim();
+      return name || "—";
+    }
+
+    function filterUsers(users) {
+      const q = (qEl.value || "").trim().toLowerCase();
+      if (!q) return users;
+      return users.filter(u => {
+        return String(u.tg_id).includes(q)
+          || (u.username || "").toLowerCase().includes(q)
+          || (u.uuid || "").toLowerCase().includes(q);
+      });
+    }
+
+    function render(users) {
+      const items = filterUsers(users);
+      if (!items.length) {
+        rowsEl.innerHTML = `<tr><td colspan="5">Ничего не найдено</td></tr>`;
+        return;
+      }
+      rowsEl.innerHTML = items.map(u => {
+        const statusBadge = u.disabled
+          ? `<span class="badge bad">Отключён</span>`
+          : (u.uuid ? `<span class="badge ok">Активен</span>` : `<span class="badge">Без ключа</span>`);
+        const uuid = u.uuid ? `<span class="mono">${u.uuid}</span>` : "—";
+        const who = `${userLabel(u)}<div class="hint">${u.disabled_reason ? ("Причина: " + u.disabled_reason) : ""}</div>`;
+        const actions = u.disabled
+          ? `
+            <div class="row-actions">
+              <button class="btn" data-act="enable" data-id="${u.tg_id}">Включить</button>
+              <button class="btn danger" data-act="revoke" data-id="${u.tg_id}">Удалить ключ</button>
+            </div>
+          `
+          : `
+            <div class="row-actions">
+              <button class="btn danger" data-act="disable" data-id="${u.tg_id}">Отключить</button>
+              <button class="btn danger" data-act="revoke" data-id="${u.tg_id}">Удалить ключ</button>
+            </div>
+          `;
+        return `
+          <tr>
+            <td>${who}</td>
+            <td class="mono">${u.tg_id}</td>
+            <td>${uuid}</td>
+            <td>${statusBadge}</td>
+            <td>${actions}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function load() {
+      try {
+        meEl.textContent = "Доступ: HTTP Basic Auth";
+        const data = await postJson("/api/admin/users", null);
+        window.__users = data.users || [];
+        render(window.__users);
+        noteEl.textContent = "Подсказка: после отключения ключ удаляется из Xray (клиент перестаёт подключаться).";
+      } catch (e) {
+        meEl.textContent = "Ошибка";
+        rowsEl.innerHTML = `<tr><td colspan="5">${String(e && e.message ? e.message : e)}</td></tr>`;
+      }
+    }
+
+    rowsEl.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const tgId = Number(btn.dataset.id || 0);
+      if (!tgId) return;
+
+      try {
+        if (act === "disable") {
+          const reason = prompt("Причина отключения (необязательно):", "") || "";
+          await postJson("/api/admin/user/disable", { tg_id: tgId, reason });
+        } else if (act === "enable") {
+          await postJson("/api/admin/user/enable", { tg_id: tgId });
+        } else if (act === "revoke") {
+          if (!confirm("Удалить ключ у пользователя?")) return;
+          await postJson("/api/admin/user/revoke_key", { tg_id: tgId });
+        }
+        await load();
+      } catch (e) {
+        alert(String(e && e.message ? e.message : e));
+      }
+    });
+
+    qEl.addEventListener("input", () => render(window.__users || []));
+    reloadBtn.addEventListener("click", load);
+
+    load();
+  </script>
+</body>
+</html>
+
