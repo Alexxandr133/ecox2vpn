@@ -265,6 +265,7 @@ async def main() -> None:
             "Добро пожаловать в ecox2vpn.\n\n"
             "Команды:\n"
             "/vpn — получить ссылку подписки\n"
+            "/instructions — инструкция подключения\n"
             "/mykey — как управлять ключом\n"
             "/revoke — удалить текущий ключ\n"
             "/app — открыть личный кабинет"
@@ -274,6 +275,18 @@ async def main() -> None:
     async def cmd_app(message: Message) -> None:
         upsert_user(message)
         await message.answer(f"Личный кабинет:\n{WEB_APP_URL}")
+
+    @dp.message(Command("instructions"))
+    async def cmd_instructions(message: Message) -> None:
+        upsert_user(message)
+        await message.answer(
+            "Инструкция подключения (v2RayTun):\n"
+            f"{WEB_APP_URL.rstrip('/')}/guide\n\n"
+            "1) В боте отправь /vpn\n"
+            "2) Скопируй ссылку подписки\n"
+            "3) Вставь её в v2RayTun как Subscription URL\n"
+            "4) Обнови подписку и подключись"
+        )
 
     @dp.message(Command("mykey"))
     async def cmd_mykey(message: Message) -> None:
