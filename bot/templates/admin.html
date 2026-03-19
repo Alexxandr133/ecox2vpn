@@ -26,7 +26,7 @@
       justify-content: center;
       align-items: flex-start;
     }
-    .wrap { width: 100%; max-width: 980px; }
+    .wrap { width: 100%; max-width: 1100px; }
     .top {
       padding: 14px 16px;
       border: 1px solid var(--border);
@@ -72,6 +72,24 @@
       font-size: 12px;
     }
     .hint { font-size: 11px; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .card {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+    .card-value { font-size: 16px; font-weight: 600; }
+    .card-sub { font-size: 11px; color: var(--muted); }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -143,27 +161,82 @@
       </div>
     </div>
 
+    <div class="grid" id="overviewCards">
+      <div class="card">
+        <div class="card-label">CPU</div>
+        <div class="card-value" id="cpuUsage">—</div>
+        <div class="card-sub">Загрузка процессора</div>
+      </div>
+      <div class="card">
+        <div class="card-label">RAM</div>
+        <div class="card-value" id="ramUsage">—</div>
+        <div class="card-sub">Использование памяти</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Трафик за сегодня</div>
+        <div class="card-value" id="trafficToday">—</div>
+        <div class="card-sub">Суммарно, ГБ</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Текущая загрузка</div>
+        <div class="card-value" id="capacityUsed">—</div>
+        <div class="card-sub">От канальной ёмкости</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Рекомендовано активных</div>
+        <div class="card-value" id="recommendedUsers">—</div>
+        <div class="card-sub">Пользователей онлайн</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 12px; border-radius:16px; border:1px solid var(--border); background: rgba(15,23,42,0.9); padding: 10px 12px;">
+      <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">Нагрузка за 24 часа (Мбит/с)</div>
+      <canvas id="trafficChart" height="140"></canvas>
+    </div>
+
     <table>
       <thead>
         <tr>
           <th>Пользователь</th>
           <th>tg_id</th>
+          <th>Подписка</th>
           <th>UUID</th>
           <th>Статус</th>
           <th>Действия</th>
         </tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="5">Загрузка…</td></tr>
+        <tr><td colspan="6">Загрузка…</td></tr>
       </tbody>
     </table>
+
+    <div style="margin-top:12px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Пользователь</th>
+            <th>tg_id</th>
+            <th>Трафик за день</th>
+            <th>Трафик за неделю</th>
+            <th>Сессии</th>
+            <th>Последний IP</th>
+            <th>Последний онлайн</th>
+          </tr>
+        </thead>
+        <tbody id="trafficRows">
+          <tr><td colspan="7">Загрузка…</td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <div class="note" id="note"></div>
     <div class="logbox" id="logbox"></div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
     const rowsEl = document.getElementById("rows");
+    const trafficRowsEl = document.getElementById("trafficRows");
     const qEl = document.getElementById("q");
     const reloadBtn = document.getElementById("reload");
     const meEl = document.getElementById("me");
@@ -209,6 +282,8 @@
           ? `<span class="badge bad">Отключён</span>`
           : (u.uuid ? `<span class="badge ok">Активен</span>` : `<span class="badge">Без ключа</span>`);
         const uuid = u.uuid ? `<span class="mono">${u.uuid}</span>` : "—";
+        const subUrl = u.sub_token ? `${window.location.origin}/sub/${u.sub_token}` : "";
+        const subCell = subUrl ? `<a href="${subUrl}" target="_blank" class="mono">${subUrl}</a>` : "—";
         const who = `${userLabel(u)}<div class="hint">${u.disabled_reason ? ("Причина: " + u.disabled_reason) : ""}</div>`;
         const actions = u.disabled
           ? `
@@ -227,12 +302,112 @@
           <tr>
             <td>${who}</td>
             <td class="mono">${u.tg_id}</td>
+            <td>${subCell}</td>
             <td>${uuid}</td>
             <td>${statusBadge}</td>
             <td>${actions}</td>
           </tr>
         `;
       }).join("");
+    }
+
+    function renderTrafficUsers(users) {
+      if (!users.length) {
+        trafficRowsEl.innerHTML = `<tr><td colspan="7">Ничего не найдено</td></tr>`;
+        return;
+      }
+      trafficRowsEl.innerHTML = users.map(u => {
+        const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim() || (u.username ? "@" + u.username : "—");
+        const day = (u.traffic_day_mb || 0).toFixed(1);
+        const week = (u.traffic_week_mb || 0).toFixed(1);
+        const lastSeen = u.last_seen_at ? new Date(u.last_seen_at * 1000).toLocaleString() : "—";
+        return `
+          <tr>
+            <td>${name}</td>
+            <td class="mono">${u.tg_id}</td>
+            <td>${day}</td>
+            <td>${week}</td>
+            <td>${u.sessions || 0}</td>
+            <td class="mono">${u.last_ip || "—"}</td>
+            <td>${lastSeen}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    let trafficChart = null;
+    function renderTimeseries(points) {
+      const ctx = document.getElementById("trafficChart").getContext("2d");
+      const labels = points.map(p => new Date(p.ts * 1000).toLocaleTimeString());
+      const data = points.map(p => p.mbps);
+      if (trafficChart) {
+        trafficChart.data.labels = labels;
+        trafficChart.data.datasets[0].data = data;
+        trafficChart.update();
+        return;
+      }
+      trafficChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: "Мбит/с",
+            data,
+            borderColor: "#38bdf8",
+            backgroundColor: "rgba(56,189,248,0.15)",
+            tension: 0.25,
+            fill: true,
+            pointRadius: 0,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8, color: "#9ca3af", font: { size: 10 } } },
+            y: { ticks: { color: "#9ca3af", font: { size: 10 } } },
+          },
+        },
+      });
+    }
+
+    async function loadOverview() {
+      try {
+        const res = await fetch("/api/admin/overview");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Request failed");
+        document.getElementById("cpuUsage").textContent = (data.cpu_usage ?? 0).toFixed(1) + " %";
+        document.getElementById("ramUsage").textContent = (data.ram_usage ?? 0).toFixed(1) + " %";
+        document.getElementById("trafficToday").textContent = (data.traffic_today_mb / 1024).toFixed(2);
+        document.getElementById("capacityUsed").textContent = (data.capacity_used_percent ?? 0).toFixed(1) + " %";
+        document.getElementById("recommendedUsers").textContent = Math.round(data.recommended_active_users ?? 0);
+      } catch {
+        document.getElementById("cpuUsage").textContent = "—";
+        document.getElementById("ramUsage").textContent = "—";
+      }
+    }
+
+    async function loadTimeseries() {
+      try {
+        const res = await fetch("/api/admin/traffic/timeseries");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Request failed");
+        renderTimeseries(data.points || []);
+      } catch {
+        // ignore
+      }
+    }
+
+    async function loadTrafficUsers() {
+      try {
+        const res = await fetch("/api/admin/traffic/users");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Request failed");
+        renderTrafficUsers(data.users || []);
+      } catch (e) {
+        trafficRowsEl.innerHTML = `<tr><td colspan="7">${String(e && e.message ? e.message : e)}</td></tr>`;
+      }
     }
 
     async function load() {
@@ -244,7 +419,7 @@
         noteEl.textContent = "Подсказка: после отключения ключ удаляется из Xray (клиент перестаёт подключаться).";
       } catch (e) {
         meEl.textContent = "Ошибка";
-        rowsEl.innerHTML = `<tr><td colspan="5">${String(e && e.message ? e.message : e)}</td></tr>`;
+        rowsEl.innerHTML = `<tr><td colspan="6">${String(e && e.message ? e.message : e)}</td></tr>`;
       }
     }
 
@@ -272,7 +447,9 @@
     });
 
     qEl.addEventListener("input", () => render(window.__users || []));
-    reloadBtn.addEventListener("click", load);
+    reloadBtn.addEventListener("click", async () => {
+      await Promise.all([load(), loadOverview(), loadTimeseries(), loadTrafficUsers()]);
+    });
 
     errorsBtn.addEventListener("click", async () => {
       try {
@@ -300,7 +477,9 @@
       }
     });
 
-    load();
+    (async () => {
+      await Promise.all([load(), loadOverview(), loadTimeseries(), loadTrafficUsers()]);
+    })();
   </script>
 </body>
 </html>

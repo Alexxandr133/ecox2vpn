@@ -44,8 +44,12 @@ VLESS_TLS = os.getenv("VLESS_TLS", "none")
 XRAY_CONFIG_PATH = os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json")
 XRAY_SYSTEMD_SERVICE = os.getenv("XRAY_SYSTEMD_SERVICE", "xray")
 XRAY_ERROR_LOG_PATH = os.getenv("XRAY_ERROR_LOG_PATH", "/var/log/xray/error.log")
+XRAY_ACCESS_LOG_PATH = os.getenv("XRAY_ACCESS_LOG_PATH", "/var/log/xray/access.log")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+CHANNEL_CAPACITY_MBPS = float(os.getenv("CHANNEL_CAPACITY_MBPS", "1000"))
+AVG_USER_MBPS = float(os.getenv("AVG_USER_MBPS", "3"))
+_CAPACITY_RESERVE_COEFF = 0.6
 security = HTTPBasic()
 
 
@@ -93,6 +97,15 @@ def _ensure_db() -> None:
         sub_cols = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
         if "sub_token" not in sub_cols:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN sub_token TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS traffic_stats (
+              ts INTEGER PRIMARY KEY,
+              bytes_in INTEGER NOT NULL,
+              bytes_out INTEGER NOT NULL
+            )
+            """
+        )
 
 
 def _telegram_webapp_check(init_data: str, bot_token: str) -> dict[str, Any]:
@@ -218,6 +231,36 @@ def _get_subscription(tg_id: int) -> dict[str, Any] | None:
     if not row:
         return None
     return {"uuid": row[0], "sub_token": row[1], "created_at": row[2], "updated_at": row[3]}
+
+
+def _get_or_create_sub_token(tg_id: int) -> str:
+    _ensure_db()
+    now = int(time.time())
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT sub_token FROM subscriptions WHERE tg_id = ?",
+            (tg_id,),
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+        token = os.urandom(16).hex()
+        conn.execute(
+            """
+            INSERT INTO subscriptions (tg_id, uuid, sub_token, created_at, updated_at)
+            VALUES (
+                ?,
+                COALESCE((SELECT uuid FROM subscriptions WHERE tg_id = ?), NULL),
+                ?,
+                COALESCE((SELECT created_at FROM subscriptions WHERE tg_id = ?), ?),
+                ?
+            )
+            ON CONFLICT(tg_id) DO UPDATE SET
+                sub_token=excluded.sub_token,
+                updated_at=excluded.updated_at
+            """,
+            (tg_id, tg_id, token, tg_id, now, now),
+        )
+        return token
 
 
 def _set_subscription(tg_id: int, uuid: str) -> None:
@@ -378,6 +421,134 @@ def _build_uuid_map() -> dict[str, int]:
     return out
 
 
+def _parse_access_log() -> list[dict[str, Any]]:
+    """
+    Best-effort parser for Xray access log.
+    Expects lines containing at least date, optional email with tg:ID,
+    and bytes_in/bytes_out fields, e.g. 'bytes_in=123 bytes_out=456 email=tg:12345'.
+    """
+    if not os.path.exists(XRAY_ACCESS_LOG_PATH):
+        return []
+    entries: list[dict[str, Any]] = []
+    now = time.time()
+    week_ago = now - 7 * 24 * 3600
+    import re
+
+    with open(XRAY_ACCESS_LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            ln = line.strip()
+            if not ln:
+                continue
+            # find date (YYYY-MM-DD)
+            m_date = re.search(r"(\d{4})-(\d{2})-(\d{2})", ln)
+            if not m_date:
+                continue
+            year, month, day = map(int, m_date.groups())
+            try:
+                ts = int(time.mktime((year, month, day, 0, 0, 0, 0, 0, -1)))
+            except Exception:
+                continue
+            if ts < week_ago:
+                # we are only interested in ~last week for aggregates
+                continue
+
+            # bytes_in / bytes_out
+            m_in = re.search(r"bytes_in=(\d+)", ln)
+            m_out = re.search(r"bytes_out=(\d+)", ln)
+            if not m_in or not m_out:
+                continue
+            bytes_in = int(m_in.group(1))
+            bytes_out = int(m_out.group(1))
+
+            # email with tg:ID
+            m_email = re.search(r"email=([^\s]+)", ln)
+            tg_id: int | None = None
+            if m_email:
+                email = m_email.group(1)
+                if "tg:" in email:
+                    try:
+                        tg_id = int(email.split("tg:")[1].split("@")[0].split(":")[-1])
+                    except Exception:
+                        tg_id = None
+
+            # try to detect IP
+            m_ip = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", ln)
+            ip = m_ip.group(1) if m_ip else None
+
+            entries.append(
+                {
+                    "ts": ts,
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
+                    "tg_id": tg_id,
+                    "ip": ip,
+                }
+            )
+    return entries
+
+
+def _update_traffic_stats_from_log() -> None:
+    entries = _parse_access_log()
+    if not entries:
+        return
+    _ensure_db()
+    bins: dict[int, dict[str, int]] = {}
+    for e in entries:
+        ts = int(e["ts"])
+        bin_ts = (ts // 300) * 300
+        b = bins.setdefault(bin_ts, {"bytes_in": 0, "bytes_out": 0})
+        b["bytes_in"] += int(e["bytes_in"])
+        b["bytes_out"] += int(e["bytes_out"])
+    with sqlite3.connect(DB_PATH) as conn:
+        for ts, vals in bins.items():
+            conn.execute(
+                """
+                INSERT INTO traffic_stats (ts, bytes_in, bytes_out)
+                VALUES (?, ?, ?)
+                ON CONFLICT(ts) DO UPDATE SET
+                    bytes_in = bytes_in + excluded.bytes_in,
+                    bytes_out = bytes_out + excluded.bytes_out
+                """,
+                (ts, vals["bytes_in"], vals["bytes_out"]),
+            )
+
+
+def _collect_user_traffic() -> dict[int, dict[str, Any]]:
+    entries = _parse_access_log()
+    now = time.time()
+    today_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+    week_ago = now - 7 * 24 * 3600
+    out: dict[int, dict[str, Any]] = {}
+    for e in entries:
+        tg_id = e.get("tg_id")
+        if not tg_id:
+            continue
+        ts = float(e["ts"])
+        bytes_in = int(e["bytes_in"])
+        bytes_out = int(e["bytes_out"])
+        total = bytes_in + bytes_out
+        u = out.setdefault(
+            int(tg_id),
+            {
+                "bytes_day": 0,
+                "bytes_week": 0,
+                "sessions": 0,
+                "last_ip": None,
+                "last_seen_at": 0,
+            },
+        )
+        if ts >= today_start:
+            u["bytes_day"] += total
+        if ts >= week_ago:
+            u["bytes_week"] += total
+        u["sessions"] += 1
+        if ts >= u["last_seen_at"]:
+            u["last_seen_at"] = int(ts)
+            if e.get("ip"):
+                u["last_ip"] = e["ip"]
+    return out
+
+
 def _get_subscription_by_token(sub_token: str) -> dict[str, Any] | None:
     _ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
@@ -456,6 +627,10 @@ async def api_me(payload: dict[str, Any]):
     tg_id = int(user["id"])
     state = _get_user_state(tg_id) or {"disabled": False}
     sub = _get_subscription(tg_id)
+    sub_url: str | None = None
+    if sub and not state.get("disabled"):
+        token = sub.get("sub_token") or _get_or_create_sub_token(tg_id)
+        sub_url = f"{WEB_APP_URL.rstrip('/')}/sub/{token}"
     return JSONResponse(
         {
             "ok": True,
@@ -469,7 +644,7 @@ async def api_me(payload: dict[str, Any]):
             "disabled": bool(state.get("disabled")),
             "disabled_reason": state.get("disabled_reason"),
             "subscription": sub,
-            "vless_uri": _build_vless_uri(sub["uuid"]) if (sub and not state.get("disabled")) else None,
+            "subscription_url": sub_url,
         }
     )
 
@@ -485,32 +660,31 @@ async def api_vpn_create(payload: dict[str, Any]):
         raise HTTPException(status_code=403, detail="Access disabled by admin")
 
     existing = _get_subscription(tg_id)
-    if existing:
-        return JSONResponse(
-            {
-                "ok": True,
-                "uuid": existing["uuid"],
-                "vless_uri": _build_vless_uri(existing["uuid"]),
-                "existing": True,
-            }
-        )
+    uuid_val: str | None = None
+    created = False
+    if existing and existing.get("uuid"):
+        uuid_val = str(existing["uuid"])
+    else:
+        # generate UUID v4 (no deps)
+        import uuid as _uuid
 
-    # generate UUID v4 (no deps)
-    import uuid as _uuid
+        uuid_val = str(_uuid.uuid4())
+        _set_subscription(tg_id, uuid_val)
+        created = True
 
-    new_uuid = str(_uuid.uuid4())
-    _set_subscription(tg_id, new_uuid)
-
-    # Real provisioning to Xray
+    # Real provisioning to Xray (idempotent)
     email = user.get("username") or f"tg:{tg_id}"
-    _xray_add_client(new_uuid, str(email))
+    _xray_add_client(uuid_val, str(email))
+
+    token = _get_or_create_sub_token(tg_id)
+    sub_url = f"{WEB_APP_URL.rstrip('/')}/sub/{token}"
 
     return JSONResponse(
         {
             "ok": True,
-            "uuid": new_uuid,
-            "vless_uri": _build_vless_uri(new_uuid),
-            "existing": False,
+            "uuid": uuid_val,
+            "subscription_url": sub_url,
+            "existing": not created,
         }
     )
 
@@ -522,8 +696,16 @@ async def api_admin_users(credentials: HTTPBasicCredentials = Depends(security))
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT u.tg_id, u.username, u.first_name, u.last_name, u.last_seen_at, u.disabled, u.disabled_reason,
-                   s.uuid, s.updated_at
+            SELECT u.tg_id,
+                   u.username,
+                   u.first_name,
+                   u.last_name,
+                   u.last_seen_at,
+                   u.disabled,
+                   u.disabled_reason,
+                   s.uuid,
+                   s.sub_token,
+                   s.updated_at
             FROM users u
             LEFT JOIN subscriptions s ON s.tg_id = u.tg_id
             ORDER BY u.last_seen_at DESC
@@ -542,7 +724,8 @@ async def api_admin_users(credentials: HTTPBasicCredentials = Depends(security))
                 "disabled": bool(r[5]),
                 "disabled_reason": r[6],
                 "uuid": r[7],
-                "sub_updated_at": r[8],
+                "sub_token": r[8],
+                "sub_updated_at": r[9],
             }
         )
     return JSONResponse({"ok": True, "users": items})
@@ -591,11 +774,14 @@ async def api_admin_revoke_key(payload: dict[str, Any], credentials: HTTPBasicCr
     if tg_id <= 0:
         raise HTTPException(status_code=400, detail="Bad tg_id")
     sub = _get_subscription(tg_id)
-    if sub:
+    if sub and sub.get("uuid"):
         _xray_remove_client(sub["uuid"])
     _ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM subscriptions WHERE tg_id = ?", (tg_id,))
+        conn.execute(
+            "UPDATE subscriptions SET uuid = NULL, updated_at = strftime('%s','now') WHERE tg_id = ?",
+            (tg_id,),
+        )
     return JSONResponse({"ok": True})
 
 
@@ -644,6 +830,166 @@ async def api_admin_errors(credentials: HTTPBasicCredentials = Depends(security)
         )
     items.reverse()
     return JSONResponse({"ok": True, "errors": items, "source": XRAY_ERROR_LOG_PATH})
+
+
+@app.get("/api/admin/overview")
+async def api_admin_overview(credentials: HTTPBasicCredentials = Depends(security)):
+    _require_admin_basic(credentials)
+
+    # CPU / RAM
+    cpu_usage = 0.0
+    ram_usage = 0.0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            meminfo = f.read()
+        import re
+
+        m_total = re.search(r"MemTotal:\s+(\d+)", meminfo)
+        m_avail = re.search(r"MemAvailable:\s+(\d+)", meminfo)
+        if m_total and m_avail:
+            total_kb = float(m_total.group(1))
+            avail_kb = float(m_avail.group(1))
+            used_kb = max(total_kb - avail_kb, 1.0)
+            ram_usage = used_kb / total_kb * 100.0
+    except Exception:
+        ram_usage = 0.0
+
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            first = f.readline()
+        parts = first.split()
+        if parts[0].startswith("cpu") and len(parts) >= 5:
+            user, nice, system, idle, *rest = map(float, parts[1:])
+            idle_all = idle
+            non_idle = user + nice + system + sum(rest[:3]) if len(rest) >= 3 else user + nice + system
+            total = idle_all + non_idle
+            # simple snapshot approximation
+            cpu_usage = (non_idle / total) * 100.0 if total else 0.0
+    except Exception:
+        cpu_usage = 0.0
+
+    # traffic
+    _update_traffic_stats_from_log()
+    entries = _parse_access_log()
+    now = time.time()
+    today_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+    traffic_today_bytes = 0
+    for e in entries:
+        if e["ts"] >= today_start:
+            traffic_today_bytes += int(e["bytes_in"]) + int(e["bytes_out"])
+
+    traffic_today_mb = traffic_today_bytes / (1024 * 1024)
+
+    # stats from traffic_stats for last 24h and last 30/10 minutes
+    _ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ts, bytes_in, bytes_out FROM traffic_stats WHERE ts >= ? ORDER BY ts",
+            (int(now) - 24 * 3600,),
+        ).fetchall()
+
+    peak_mbps = 0.0
+    recent_points: list[tuple[int, int]] = []
+    for ts, bi, bo in rows:
+        total_bytes = int(bi) + int(bo)
+        mbps = total_bytes * 8.0 / 300.0 / 1_000_000.0
+        if mbps > peak_mbps:
+            peak_mbps = mbps
+        if ts >= int(now) - 10 * 60:
+            recent_points.append((ts, total_bytes))
+
+    if not recent_points and rows:
+        # если за последние 10 минут нет данных — берём последние 30 минут
+        for ts, bi, bo in rows:
+            if ts >= int(now) - 30 * 60:
+                recent_points.append((ts, int(bi) + int(bo)))
+
+    traffic_avg_mbps_10m = 0.0
+    if recent_points:
+        total_bytes_recent = sum(v for _, v in recent_points)
+        duration = len(recent_points) * 300.0
+        if duration > 0:
+            traffic_avg_mbps_10m = total_bytes_recent * 8.0 / duration / 1_000_000.0
+
+    capacity_used_percent = (peak_mbps / CHANNEL_CAPACITY_MBPS * 100.0) if CHANNEL_CAPACITY_MBPS > 0 else 0.0
+    recommended_active_users = (CHANNEL_CAPACITY_MBPS / AVG_USER_MBPS * _CAPACITY_RESERVE_COEFF) if AVG_USER_MBPS > 0 else 0.0
+
+    return JSONResponse(
+        {
+            "cpu_usage": cpu_usage,
+            "ram_usage": ram_usage,
+            "traffic_today_mb": traffic_today_mb,
+            "traffic_peak_mbps": peak_mbps,
+            "traffic_avg_mbps_10m": traffic_avg_mbps_10m,
+            "capacity_used_percent": capacity_used_percent,
+            "recommended_active_users": recommended_active_users,
+        }
+    )
+
+
+@app.get("/api/admin/traffic/users")
+async def api_admin_traffic_users(credentials: HTTPBasicCredentials = Depends(security)):
+    _require_admin_basic(credentials)
+    by_user = _collect_user_traffic()
+    if not by_user:
+        return JSONResponse({"users": []})
+    _ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        # fetch basic profile info
+        users_map: dict[int, dict[str, Any]] = {}
+        tg_ids = list(by_user.keys())
+        placeholders = ",".join("?" for _ in tg_ids)
+        rows = conn.execute(
+            f"SELECT tg_id, username, first_name, last_name FROM users WHERE tg_id IN ({placeholders})",
+            tg_ids,
+        ).fetchall()
+        for row in rows:
+            users_map[int(row[0])] = {
+                "tg_id": int(row[0]),
+                "username": row[1],
+                "first_name": row[2],
+                "last_name": row[3],
+            }
+
+    users_out: list[dict[str, Any]] = []
+    for tg_id, stats in by_user.items():
+        base = users_map.get(
+            tg_id,
+            {"tg_id": tg_id, "username": None, "first_name": None, "last_name": None},
+        )
+        users_out.append(
+            {
+                "tg_id": tg_id,
+                "username": base.get("username"),
+                "first_name": base.get("first_name"),
+                "last_name": base.get("last_name"),
+                "traffic_day_mb": stats["bytes_day"] / (1024 * 1024),
+                "traffic_week_mb": stats["bytes_week"] / (1024 * 1024),
+                "sessions": stats["sessions"],
+                "last_ip": stats["last_ip"],
+                "last_seen_at": stats["last_seen_at"],
+            }
+        )
+    return JSONResponse({"users": users_out})
+
+
+@app.get("/api/admin/traffic/timeseries")
+async def api_admin_traffic_timeseries(credentials: HTTPBasicCredentials = Depends(security)):
+    _require_admin_basic(credentials)
+    _update_traffic_stats_from_log()
+    now = int(time.time())
+    _ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ts, bytes_in, bytes_out FROM traffic_stats WHERE ts >= ? ORDER BY ts",
+            (now - 24 * 3600,),
+        ).fetchall()
+    points: list[dict[str, Any]] = []
+    for ts, bi, bo in rows:
+        total_bytes = int(bi) + int(bo)
+        mbps = total_bytes * 8.0 / 300.0 / 1_000_000.0
+        points.append({"ts": int(ts), "mbps": mbps})
+    return JSONResponse({"points": points})
 
 
 if __name__ == "__main__":

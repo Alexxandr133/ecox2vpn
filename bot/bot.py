@@ -52,11 +52,26 @@ def ensure_db() -> None:
             CREATE TABLE IF NOT EXISTS subscriptions (
                 tg_id INTEGER PRIMARY KEY,
                 uuid TEXT NOT NULL,
+                sub_token TEXT,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (tg_id) REFERENCES users(tg_id)
             )
             """
         )
+        # lightweight migrations for existing installs
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "last_seen_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0")
+        if "disabled" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+        if "disabled_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN disabled_at INTEGER")
+        if "disabled_reason" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN disabled_reason TEXT")
+        sub_cols = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "sub_token" not in sub_cols:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN sub_token TEXT")
 
 
 def upsert_user(message: Message) -> None:
@@ -105,12 +120,12 @@ def get_subscription(tg_id: int) -> dict | None:
     ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
-            "SELECT uuid, created_at, updated_at FROM subscriptions WHERE tg_id = ?",
+            "SELECT uuid, sub_token, created_at, updated_at FROM subscriptions WHERE tg_id = ?",
             (tg_id,),
         ).fetchone()
     if not row:
         return None
-    return {"uuid": row[0], "created_at": row[1], "updated_at": row[2]}
+    return {"uuid": row[0], "sub_token": row[1], "created_at": row[2], "updated_at": row[3]}
 
 
 def set_subscription(tg_id: int, sub_uuid: str) -> None:
@@ -129,10 +144,13 @@ def set_subscription(tg_id: int, sub_uuid: str) -> None:
         )
 
 
-def delete_subscription(tg_id: int) -> None:
+def clear_subscription_uuid(tg_id: int) -> None:
     ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM subscriptions WHERE tg_id = ?", (tg_id,))
+        conn.execute(
+            "UPDATE subscriptions SET uuid = NULL, updated_at = strftime('%s','now') WHERE tg_id = ?",
+            (tg_id,),
+        )
 
 
 def build_vless_uri(sub_uuid: str) -> str:
@@ -171,14 +189,22 @@ def get_or_create_sub_token(tg_id: int) -> str:
         if row and row[0]:
             return row[0]
         token = os.urandom(16).hex()
+        now = int(time.time())
         conn.execute(
             """
             INSERT INTO subscriptions (tg_id, uuid, sub_token, created_at, updated_at)
-            VALUES (?, COALESCE((SELECT uuid FROM subscriptions WHERE tg_id = ?), ''), ?, strftime('%s','now'), strftime('%s','now'))
+            VALUES (
+                ?,
+                COALESCE((SELECT uuid FROM subscriptions WHERE tg_id = ?), NULL),
+                ?,
+                COALESCE((SELECT created_at FROM subscriptions WHERE tg_id = ?), ?),
+                ?
+            )
             ON CONFLICT(tg_id) DO UPDATE SET
-                sub_token=excluded.sub_token
+                sub_token=excluded.sub_token,
+                updated_at=excluded.updated_at
             """,
-            (tg_id, tg_id, token),
+            (tg_id, tg_id, token, tg_id, now, now),
         )
         return token
 
@@ -238,8 +264,8 @@ async def main() -> None:
         await message.answer(
             "Добро пожаловать в ecox2vpn.\n\n"
             "Команды:\n"
-            "/vpn — создать или получить твой VPN‑ключ\n"
-            "/mykey — показать текущий ключ\n"
+            "/vpn — получить ссылку подписки\n"
+            "/mykey — как управлять ключом\n"
             "/revoke — удалить текущий ключ\n"
             "/app — открыть личный кабинет"
         )
@@ -254,16 +280,10 @@ async def main() -> None:
         upsert_user(message)
         if not message.from_user:
             return
-        tg_id = int(message.from_user.id)
-        disabled, reason = get_user_disabled(tg_id)
-        if disabled:
-            await message.answer(f"Доступ отключён администратором.\n{reason or ''}".strip())
-            return
-        sub = get_subscription(tg_id)
-        if not sub:
-            await message.answer("У тебя пока нет ключа. Используй команду /vpn.")
-            return
-        await message.answer(f"Твой VPN‑ключ:\n{build_vless_uri(sub['uuid'])}")
+        await message.answer(
+            "Твой VPN‑ключ теперь управляется через подписку.\n"
+            "Чтобы получить ссылку подписки, используй команду /vpn."
+        )
 
     @dp.message(Command("vpn"))
     async def cmd_vpn(message: Message) -> None:
@@ -276,28 +296,30 @@ async def main() -> None:
             await message.answer(f"Доступ отключён администратором.\n{reason or ''}".strip())
             return
         sub = get_subscription(tg_id)
-        if sub:
-            tcp_uri = build_vless_uri(sub["uuid"])
-            ws_uri = build_vless_ws_uri(sub["uuid"])
-            text = f"Твой VPN‑ключ (TCP):\n{tcp_uri}"
-            if ws_uri:
-                text += f"\n\nVPN‑ключ (WS+TLS):\n{ws_uri}"
-            await message.answer(text)
-            return
-        new_uuid = str(uuid.uuid4())
-        try:
-            email = message.from_user.username or f"tg:{tg_id}"
-            xray_add_client(new_uuid, str(email))
-            set_subscription(tg_id, new_uuid)
-        except Exception as e:
-            await message.answer(f"Не удалось создать ключ. Попробуй позже.\nТех. ошибка: {e}")
-            return
-        tcp_uri = build_vless_uri(new_uuid)
-        ws_uri = build_vless_ws_uri(new_uuid)
-        text = f"Готово. Твой VPN‑ключ (TCP):\n{tcp_uri}"
-        if ws_uri:
-            text += f"\n\nVPN‑ключ (WS+TLS):\n{ws_uri}"
-        await message.answer(text)
+        sub_uuid = sub["uuid"] if sub and sub.get("uuid") else None
+        if not sub_uuid:
+            sub_uuid = str(uuid.uuid4())
+            try:
+                email = message.from_user.username or f"tg:{tg_id}"
+                xray_add_client(sub_uuid, str(email))
+                set_subscription(tg_id, sub_uuid)
+            except Exception as e:
+                await message.answer(
+                    "Не удалось создать ключ. Попробуй позже.\n"
+                    f"Тех. ошибка: {e}"
+                )
+                return
+        else:
+            try:
+                email = message.from_user.username or f"tg:{tg_id}"
+                xray_add_client(sub_uuid, str(email))
+            except Exception:
+                # игнорируем, если клиент уже был добавлен или перезагрузка не удалась
+                pass
+
+        token = get_or_create_sub_token(tg_id)
+        url = f"{WEB_APP_URL.rstrip('/')}/sub/{token}"
+        await message.answer(f"Твоя ссылка подписки:\n{url}")
 
     @dp.message(Command("revoke"))
     async def cmd_revoke(message: Message) -> None:
@@ -306,26 +328,19 @@ async def main() -> None:
             return
         tg_id = int(message.from_user.id)
         sub = get_subscription(tg_id)
-        if not sub:
+        if not sub or not sub.get("uuid"):
             await message.answer("У тебя нет активного ключа.")
             return
         try:
             xray_remove_client(sub["uuid"])
-            delete_subscription(tg_id)
+            clear_subscription_uuid(tg_id)
         except Exception as e:
             await message.answer(f"Не удалось удалить ключ.\nТех. ошибка: {e}")
             return
-        await message.answer("Ключ удалён. Чтобы получить новый, используй /vpn.")
-
-    @dp.message(Command("sub"))
-    async def cmd_sub(message: Message) -> None:
-        upsert_user(message)
-        if not message.from_user:
-            return
-        tg_id = int(message.from_user.id)
-        token = get_or_create_sub_token(tg_id)
-        url = f"{WEB_APP_URL.rstrip('/')}/sub/{token}"
-        await message.answer(f"Твоя ссылка подписки:\n{url}")
+        await message.answer(
+            "Ключ удалён. Подписка сохранена.\n"
+            "Чтобы получить новый ключ в этой же подписке, используй /vpn."
+        )
 
     await dp.start_polling(bot)
 

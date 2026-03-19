@@ -354,10 +354,10 @@
       </section>
 
       <section class="keybox">
-        <div class="card-label">VLESS‑ключ</div>
-        <textarea id="key" readonly placeholder="Нажми «Создать VPN‑ключ», чтобы получить подключение."></textarea>
+        <div class="card-label">Ссылка подписки</div>
+        <textarea id="key" readonly placeholder="Нажми «Создать ссылку подписки», затем скопируй её и вставь в V2RayTun или другой клиент."></textarea>
         <div class="row">
-          <button class="btn-primary" id="createBtn" type="button">Создать VPN‑ключ</button>
+          <button class="btn-primary" id="createBtn" type="button">Создать ссылку подписки</button>
         </div>
         <div class="row">
           <button class="btn-small" id="copyBtn" type="button">Копировать</button>
@@ -447,16 +447,16 @@
           return;
         }
 
-        if (data.vless_uri) {
-          subLine.textContent = "Активна • 30 дней";
-          keyEl.value = data.vless_uri;
-          createBtn.textContent = "Переиздать (пока не нужно)";
-          createBtn.disabled = true;
-          createBtn.style.opacity = "0.6";
+        if (data.subscription_url) {
+          subLine.textContent = "Подписка активна";
+          keyEl.value = data.subscription_url;
+          createBtn.textContent = "Обновить ключ в подписке";
+          createBtn.disabled = false;
+          createBtn.style.opacity = "1";
         } else {
           subLine.textContent = "Не оформлена";
           keyEl.value = "";
-          createBtn.textContent = "Создать VPN‑ключ";
+          createBtn.textContent = "Создать ссылку подписки";
         }
       } catch (e) {
         statusLine.textContent = "Ошибка авторизации";
@@ -471,8 +471,12 @@
       try {
         setBusy(true);
         const data = await postJson("/api/vpn/create", { initData: safeInitData() });
-        keyEl.value = data.vless_uri;
-        subLine.textContent = data.existing ? "Ключ уже был создан" : "Ключ создан";
+        if (data.subscription_url) {
+          keyEl.value = data.subscription_url;
+          subLine.textContent = data.existing ? "Подписка уже была создана" : "Подписка создана";
+        } else {
+          subLine.textContent = "Не удалось получить ссылку подписки";
+        }
       } catch (e) {
         note.textContent = "Не удалось создать ключ. Попробуй ещё раз через пару секунд.";
       } finally {
