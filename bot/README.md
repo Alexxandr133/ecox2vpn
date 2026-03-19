@@ -78,6 +78,38 @@ python bot.py
 
 ---
 
+### Единый запуск в одном screen (сервер)
+
+Если хочешь поднимать и `webapp`, и `bot` одной командой в одном `screen`:
+
+```bash
+cd /opt/ecox2vpn
+chmod +x run_all_in_screen.sh stop_all_in_screen.sh
+./run_all_in_screen.sh
+```
+
+Проверка:
+
+```bash
+screen -ls
+screen -r ecox2vpn
+```
+
+Логи:
+
+```bash
+tail -f /tmp/ecox2vpn-webapp.log
+tail -f /tmp/ecox2vpn-bot.log
+```
+
+Остановка:
+
+```bash
+./stop_all_in_screen.sh
+```
+
+---
+
 ### Дальнейшие шаги
 
 1. Подключить реальную авторизацию через `initData` Telegram WebApp.

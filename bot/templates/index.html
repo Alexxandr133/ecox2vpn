@@ -191,6 +191,9 @@
       font-size: 11px;
       color: var(--accent);
     }
+    .ms-good { color: #22c55e; }
+    .ms-warn { color: #f59e0b; }
+    .ms-bad { color: #ef4444; }
 
     .actions {
       display: flex;
@@ -492,8 +495,17 @@
         await fetch("/api/ping", { cache: "no-store" });
         const ms = Math.max(1, Math.round(performance.now() - start));
         pingValue.textContent = String(ms);
+        pingValue.classList.remove("ms-good", "ms-warn", "ms-bad");
+        if (ms < 120) {
+          pingValue.classList.add("ms-good");
+        } else if (ms < 250) {
+          pingValue.classList.add("ms-warn");
+        } else {
+          pingValue.classList.add("ms-bad");
+        }
       } catch {
         pingValue.textContent = "—";
+        pingValue.classList.remove("ms-good", "ms-warn", "ms-bad");
       }
     }
 

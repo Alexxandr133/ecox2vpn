@@ -43,6 +43,7 @@ VLESS_TLS = os.getenv("VLESS_TLS", "none")
 
 XRAY_CONFIG_PATH = os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json")
 XRAY_SYSTEMD_SERVICE = os.getenv("XRAY_SYSTEMD_SERVICE", "xray")
+XRAY_ERROR_LOG_PATH = os.getenv("XRAY_ERROR_LOG_PATH", "/var/log/xray/error.log")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 security = HTTPBasic()
@@ -332,6 +333,29 @@ def _xray_remove_client(uuid: str) -> None:
         pass
 
 
+def _read_last_lines(path: str, limit: int = 200) -> list[str]:
+    if not os.path.exists(path):
+        return []
+    # simple and robust: read whole file and take tail
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    return [ln.rstrip("\n") for ln in lines[-limit:]]
+
+
+def _build_uuid_map() -> dict[str, int]:
+    _ensure_db()
+    out: dict[str, int] = {}
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT tg_id, uuid FROM subscriptions").fetchall()
+    for tg_id, sub_uuid in rows:
+        if sub_uuid:
+            out[str(sub_uuid)] = int(tg_id)
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(
@@ -518,6 +542,53 @@ async def api_admin_revoke_key(payload: dict[str, Any], credentials: HTTPBasicCr
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM subscriptions WHERE tg_id = ?", (tg_id,))
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/errors")
+async def api_admin_errors(credentials: HTTPBasicCredentials = Depends(security)):
+    _require_admin_basic(credentials)
+    lines = _read_last_lines(XRAY_ERROR_LOG_PATH, limit=300)
+    uuid_map = _build_uuid_map()
+    user_cache: dict[int, dict[str, Any]] = {}
+
+    def user_by_tg_id(tg_id: int) -> dict[str, Any]:
+        if tg_id in user_cache:
+            return user_cache[tg_id]
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT tg_id, username, first_name, last_name FROM users WHERE tg_id = ?",
+                (tg_id,),
+            ).fetchone()
+        user_cache[tg_id] = {
+            "tg_id": row[0],
+            "username": row[1],
+            "first_name": row[2],
+            "last_name": row[3],
+        } if row else {"tg_id": tg_id}
+        return user_cache[tg_id]
+
+    # keep only suspicious/error-like lines
+    lowered_needles = ("error", "failed", "timeout", "broken", "refused", "reset", "invalid")
+    filtered = [ln for ln in lines if any(n in ln.lower() for n in lowered_needles)]
+
+    items: list[dict[str, Any]] = []
+    for ln in filtered[-120:]:
+        matched_uuid = None
+        matched_user = None
+        for sub_uuid, tg_id in uuid_map.items():
+            if sub_uuid in ln:
+                matched_uuid = sub_uuid
+                matched_user = user_by_tg_id(tg_id)
+                break
+        items.append(
+            {
+                "line": ln,
+                "uuid": matched_uuid,
+                "user": matched_user,
+            }
+        )
+    items.reverse()
+    return JSONResponse({"ok": True, "errors": items, "source": XRAY_ERROR_LOG_PATH})
 
 
 if __name__ == "__main__":

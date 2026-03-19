@@ -99,6 +99,30 @@
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .note { margin-top: 10px; font-size: 11px; color: var(--muted); }
+    .logbox {
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      background: rgba(2, 6, 23, 0.7);
+      border-radius: 12px;
+      padding: 10px;
+      display: none;
+      max-height: 300px;
+      overflow: auto;
+    }
+    .logline {
+      font-size: 11px;
+      color: #cbd5e1;
+      padding: 8px 0;
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.2);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .logline:last-child { border-bottom: none; }
+    .logmeta {
+      color: var(--muted);
+      font-size: 10px;
+      margin-bottom: 4px;
+    }
   </style>
 </head>
 <body>
@@ -113,7 +137,10 @@
 
     <div class="toolbar">
       <input class="search" id="q" placeholder="Поиск по tg_id / username / UUID…" />
-      <div class="hint" id="hint">Только админы (ADMIN_TG_IDS).</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn" id="errorsBtn">Ошибки подключений</button>
+        <div class="hint" id="hint">Только для администратора.</div>
+      </div>
     </div>
 
     <table>
@@ -132,6 +159,7 @@
     </table>
 
     <div class="note" id="note"></div>
+    <div class="logbox" id="logbox"></div>
   </div>
 
   <script>
@@ -140,6 +168,8 @@
     const reloadBtn = document.getElementById("reload");
     const meEl = document.getElementById("me");
     const noteEl = document.getElementById("note");
+    const errorsBtn = document.getElementById("errorsBtn");
+    const logbox = document.getElementById("logbox");
 
     async function postJson(url, body) {
       const res = await fetch(url, {
@@ -243,6 +273,32 @@
 
     qEl.addEventListener("input", () => render(window.__users || []));
     reloadBtn.addEventListener("click", load);
+
+    errorsBtn.addEventListener("click", async () => {
+      try {
+        const data = await postJson("/api/admin/errors", null);
+        const rows = data.errors || [];
+        if (!rows.length) {
+          logbox.style.display = "block";
+          logbox.innerHTML = `<div class="logline">Ошибок в логе не найдено.</div>`;
+          return;
+        }
+        logbox.style.display = "block";
+        logbox.innerHTML = rows.map((r) => {
+          const u = r.user;
+          const who = u ? `tg_id=${u.tg_id}${u.username ? (" @" + u.username) : ""}` : "не определен";
+          const uuid = r.uuid ? `UUID=${r.uuid}` : "UUID не найден";
+          return `
+            <div class="logline">
+              <div class="logmeta">${who} • ${uuid}</div>
+              <div>${r.line}</div>
+            </div>
+          `;
+        }).join("");
+      } catch (e) {
+        alert(String(e && e.message ? e.message : e));
+      }
+    });
 
     load();
   </script>
