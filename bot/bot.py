@@ -119,8 +119,8 @@ def set_subscription(tg_id: int, sub_uuid: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO subscriptions (tg_id, uuid, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO subscriptions (tg_id, uuid, sub_token, created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?)
             ON CONFLICT(tg_id) DO UPDATE SET
                 uuid=excluded.uuid,
                 updated_at=excluded.updated_at
@@ -142,6 +142,45 @@ def build_vless_uri(sub_uuid: str) -> str:
     params.append("encryption=none")
     params.append(f"type={VLESS_TRANSPORT}")
     return f"vless://{sub_uuid}@{VLESS_HOST}:{VLESS_PORT}?{'&'.join(params)}#ecox2vpn"
+
+
+def build_vless_ws_uri(sub_uuid: str) -> str | None:
+    host = os.getenv("VLESS_WS_HOST", VLESS_HOST)
+    port = int(os.getenv("VLESS_WS_PORT", "0") or "0")
+    path = os.getenv("VLESS_WS_PATH", "/ws")
+    security = os.getenv("VLESS_WS_SECURITY", "tls")
+    if not port:
+        return None
+    params = [
+        "encryption=none",
+        "type=ws",
+        f"path={path}",
+    ]
+    if security and security != "none":
+        params.append(f"security={security}")
+    return f"vless://{sub_uuid}@{host}:{port}?{'&'.join(params)}#ecox2vpn-ws"
+
+
+def get_or_create_sub_token(tg_id: int) -> str:
+    ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT sub_token FROM subscriptions WHERE tg_id = ?",
+            (tg_id,),
+        ).fetchone()
+        if row and row[0]:
+            return row[0]
+        token = os.urandom(16).hex()
+        conn.execute(
+            """
+            INSERT INTO subscriptions (tg_id, uuid, sub_token, created_at, updated_at)
+            VALUES (?, COALESCE((SELECT uuid FROM subscriptions WHERE tg_id = ?), ''), ?, strftime('%s','now'), strftime('%s','now'))
+            ON CONFLICT(tg_id) DO UPDATE SET
+                sub_token=excluded.sub_token
+            """,
+            (tg_id, tg_id, token),
+        )
+        return token
 
 
 def xray_add_client(sub_uuid: str, email: str) -> None:
@@ -238,7 +277,12 @@ async def main() -> None:
             return
         sub = get_subscription(tg_id)
         if sub:
-            await message.answer(f"Твой VPN‑ключ:\n{build_vless_uri(sub['uuid'])}")
+            tcp_uri = build_vless_uri(sub["uuid"])
+            ws_uri = build_vless_ws_uri(sub["uuid"])
+            text = f"Твой VPN‑ключ (TCP):\n{tcp_uri}"
+            if ws_uri:
+                text += f"\n\nVPN‑ключ (WS+TLS):\n{ws_uri}"
+            await message.answer(text)
             return
         new_uuid = str(uuid.uuid4())
         try:
@@ -248,7 +292,12 @@ async def main() -> None:
         except Exception as e:
             await message.answer(f"Не удалось создать ключ. Попробуй позже.\nТех. ошибка: {e}")
             return
-        await message.answer(f"Готово. Твой VPN‑ключ:\n{build_vless_uri(new_uuid)}")
+        tcp_uri = build_vless_uri(new_uuid)
+        ws_uri = build_vless_ws_uri(new_uuid)
+        text = f"Готово. Твой VPN‑ключ (TCP):\n{tcp_uri}"
+        if ws_uri:
+            text += f"\n\nVPN‑ключ (WS+TLS):\n{ws_uri}"
+        await message.answer(text)
 
     @dp.message(Command("revoke"))
     async def cmd_revoke(message: Message) -> None:
@@ -267,6 +316,16 @@ async def main() -> None:
             await message.answer(f"Не удалось удалить ключ.\nТех. ошибка: {e}")
             return
         await message.answer("Ключ удалён. Чтобы получить новый, используй /vpn.")
+
+    @dp.message(Command("sub"))
+    async def cmd_sub(message: Message) -> None:
+        upsert_user(message)
+        if not message.from_user:
+            return
+        tg_id = int(message.from_user.id)
+        token = get_or_create_sub_token(tg_id)
+        url = f"{WEB_APP_URL.rstrip('/')}/sub/{token}"
+        await message.answer(f"Твоя ссылка подписки:\n{url}")
 
     await dp.start_polling(bot)
 

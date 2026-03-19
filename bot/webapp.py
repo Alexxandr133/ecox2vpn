@@ -73,6 +73,7 @@ def _ensure_db() -> None:
             CREATE TABLE IF NOT EXISTS subscriptions (
                 tg_id INTEGER PRIMARY KEY,
                 uuid TEXT NOT NULL,
+                sub_token TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY (tg_id) REFERENCES users(tg_id)
@@ -89,6 +90,9 @@ def _ensure_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN disabled_at INTEGER")
         if "disabled_reason" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN disabled_reason TEXT")
+        sub_cols = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "sub_token" not in sub_cols:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN sub_token TEXT")
 
 
 def _telegram_webapp_check(init_data: str, bot_token: str) -> dict[str, Any]:
@@ -208,12 +212,12 @@ def _get_subscription(tg_id: int) -> dict[str, Any] | None:
     _ensure_db()
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
-            "SELECT uuid, created_at, updated_at FROM subscriptions WHERE tg_id = ?",
+            "SELECT uuid, sub_token, created_at, updated_at FROM subscriptions WHERE tg_id = ?",
             (tg_id,),
         ).fetchone()
     if not row:
         return None
-    return {"uuid": row[0], "created_at": row[1], "updated_at": row[2]}
+    return {"uuid": row[0], "sub_token": row[1], "created_at": row[2], "updated_at": row[3]}
 
 
 def _set_subscription(tg_id: int, uuid: str) -> None:
@@ -222,8 +226,8 @@ def _set_subscription(tg_id: int, uuid: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO subscriptions (tg_id, uuid, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO subscriptions (tg_id, uuid, sub_token, created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?)
             ON CONFLICT(tg_id) DO UPDATE SET
                 uuid=excluded.uuid,
                 updated_at=excluded.updated_at
@@ -240,6 +244,24 @@ def _build_vless_uri(uuid: str) -> str:
     params.append(f"type={VLESS_TRANSPORT}")
     query = "&".join(params)
     return f"vless://{uuid}@{VLESS_HOST}:{VLESS_PORT}?{query}#ecox2vpn"
+
+
+def _build_vless_ws_uri(uuid: str) -> str | None:
+    host = os.getenv("VLESS_WS_HOST", VLESS_HOST)
+    port = int(os.getenv("VLESS_WS_PORT", "0") or "0")
+    path = os.getenv("VLESS_WS_PATH", "/ws")
+    security = os.getenv("VLESS_WS_SECURITY", "tls")
+    if not port:
+        return None
+    params = [
+        "encryption=none",
+        "type=ws",
+        f"path={path}",
+    ]
+    if security and security != "none":
+        params.append(f"security={security}")
+    query = "&".join(params)
+    return f"vless://{uuid}@{host}:{port}?{query}#ecox2vpn-ws"
 
 
 def _xray_add_client(uuid: str, email: str) -> None:
@@ -356,6 +378,18 @@ def _build_uuid_map() -> dict[str, int]:
     return out
 
 
+def _get_subscription_by_token(sub_token: str) -> dict[str, Any] | None:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT tg_id, uuid FROM subscriptions WHERE sub_token = ?",
+            (sub_token,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"tg_id": int(row[0]), "uuid": row[1]}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(
@@ -380,6 +414,27 @@ async def guide(request: Request):
 @app.get("/api/ping")
 async def api_ping():
     return JSONResponse({"ok": True, "ts": int(time.time() * 1000)})
+
+
+@app.get("/sub/{token}")
+async def sub_feed(token: str):
+    token = token.strip()
+    if not token:
+        raise HTTPException(status_code=404, detail="not found")
+    sub = _get_subscription_by_token(token)
+    if not sub or not sub.get("uuid"):
+        # пустая подписка — клиента не ломаем, но и ничего не даём
+        return HTMLResponse(content="", media_type="text/plain")
+    uuid = sub["uuid"]
+    urls: list[str] = []
+    tcp_uri = _build_vless_uri(uuid)
+    if tcp_uri:
+        urls.append(tcp_uri)
+    ws_uri = _build_vless_ws_uri(uuid)
+    if ws_uri:
+        urls.append(ws_uri)
+    body = "\n".join(urls)
+    return HTMLResponse(content=body, media_type="text/plain")
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, credentials: HTTPBasicCredentials = Depends(security)):
