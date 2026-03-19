@@ -35,6 +35,7 @@ load_dotenv(os.path.join(os.path.dirname(BASE_DIR), ".env"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "https://ecox2vpn.online/")
+V2RAYTUN_DOWNLOAD_URL = os.getenv("V2RAYTUN_DOWNLOAD_URL", "https://apps.apple.com/app/v2raytun/id6476628951")
 VLESS_HOST = os.getenv("VLESS_HOST", "ecox2vpn.online")
 VLESS_PORT = int(os.getenv("VLESS_PORT", "4433"))
 VLESS_TRANSPORT = os.getenv("VLESS_TRANSPORT", "tcp")
@@ -338,8 +339,23 @@ async def index(request: Request):
         {
             "request": request,
             "web_app_url": WEB_APP_URL,
+            "v2raytun_download_url": V2RAYTUN_DOWNLOAD_URL,
         },
     )
+
+@app.get("/guide", response_class=HTMLResponse)
+async def guide(request: Request):
+    return templates.TemplateResponse(
+        "guide.html",
+        {
+            "request": request,
+            "v2raytun_download_url": V2RAYTUN_DOWNLOAD_URL,
+        },
+    )
+
+@app.get("/api/ping")
+async def api_ping():
+    return JSONResponse({"ok": True, "ts": int(time.time() * 1000)})
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, credentials: HTTPBasicCredentials = Depends(security)):

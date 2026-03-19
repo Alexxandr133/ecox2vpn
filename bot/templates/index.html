@@ -298,11 +298,7 @@
       cursor: pointer;
     }
 
-    .note {
-      font-size: 11px;
-      color: var(--text-muted);
-      line-height: 1.35;
-    }
+    .note { display: none; }
   </style>
 </head>
 <body>
@@ -340,7 +336,7 @@
         <div class="card">
           <div class="card-main">
             <div class="card-label">Статус сервера</div>
-            <div class="card-value">Онлайн • ecox2vpn.online</div>
+            <div class="card-value">Онлайн • <span id="pingValue">…</span> мс</div>
           </div>
           <div class="pill-soft">
             VLESS ready
@@ -353,7 +349,7 @@
             <div class="card-value" id="subLine">Нет активного ключа</div>
           </div>
           <div class="pill-soft">
-            UUID • VLESS
+            VLESS
           </div>
         </div>
       </section>
@@ -368,8 +364,11 @@
           <button class="btn-small" id="copyBtn" type="button">Копировать</button>
           <button class="btn-small" id="shareBtn" type="button">Поделиться</button>
         </div>
+        <div class="row">
+          <button class="btn-small" id="guideBtn" type="button">Инструкция подключения</button>
+        </div>
         <div class="note" id="note">
-          Ключ привязан к твоему Telegram‑аккаунту.
+          
         </div>
       </section>
 
@@ -389,7 +388,9 @@
     const createBtn = document.getElementById("createBtn");
     const copyBtn = document.getElementById("copyBtn");
     const shareBtn = document.getElementById("shareBtn");
+    const guideBtn = document.getElementById("guideBtn");
     const note = document.getElementById("note");
+    const pingValue = document.getElementById("pingValue");
 
     function setBusy(isBusy) {
       createBtn.disabled = isBusy;
@@ -442,7 +443,7 @@
         }
 
         if (data.vless_uri) {
-          subLine.textContent = "Ключ активен";
+          subLine.textContent = "Подключение активно";
           keyEl.value = data.vless_uri;
           createBtn.textContent = "Переиздать (пока не нужно)";
           createBtn.disabled = true;
@@ -485,6 +486,17 @@
       }
     });
 
+    async function updatePing() {
+      const start = performance.now();
+      try {
+        await fetch("/api/ping", { cache: "no-store" });
+        const ms = Math.max(1, Math.round(performance.now() - start));
+        pingValue.textContent = String(ms);
+      } catch {
+        pingValue.textContent = "—";
+      }
+    }
+
     shareBtn.addEventListener("click", async () => {
       const text = keyEl.value || "";
       if (!text) return;
@@ -495,6 +507,12 @@
       note.textContent = "Открой это в Telegram, чтобы поделиться.";
     });
 
+    guideBtn.addEventListener("click", () => {
+      window.location.href = "/guide";
+    });
+
+    updatePing();
+    setInterval(updatePing, 10000);
     loadMe();
   </script>
 </body>

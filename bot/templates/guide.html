@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Инструкция подключения</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050816;
+      --card: #0f172a;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --border: rgba(148, 163, 184, 0.25);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, "Roboto", sans-serif; }
+    body {
+      background: radial-gradient(circle at top, #0f172a 0, #020617 45%, #000 100%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 18px;
+      display: flex;
+      justify-content: center;
+    }
+    .wrap { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 12px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    h1 { font-size: 18px; }
+    h2 { font-size: 14px; color: #cbd5e1; }
+    p, li { font-size: 13px; color: var(--muted); line-height: 1.5; }
+    ol { padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+      color: #0b1120;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 13px;
+      max-width: 280px;
+    }
+    .mono {
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: #e2e8f0;
+      background: rgba(2, 6, 23, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Инструкция подключения VPN (VLESS)</h1>
+      <p>Ниже быстрый способ подключиться через <strong>v2RayTun</strong>.</p>
+    </div>
+
+    <div class="card">
+      <h2>1) Установи приложение</h2>
+      <p>Скачай v2RayTun по ссылке ниже:</p>
+      <a class="btn" href="{{ v2raytun_download_url }}" target="_blank" rel="noopener noreferrer">Скачать v2RayTun</a>
+    </div>
+
+    <div class="card">
+      <h2>2) Получи ключ в боте</h2>
+      <ol>
+        <li>Открой бота и отправь команду <span class="mono">/vpn</span>.</li>
+        <li>Скопируй выданную строку вида <span class="mono">vless://...</span>.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>3) Импортируй ключ в v2RayTun</h2>
+      <ol>
+        <li>Открой v2RayTun.</li>
+        <li>Нажми добавление профиля (обычно «+»).</li>
+        <li>Выбери импорт из буфера обмена / ссылки.</li>
+        <li>Вставь свой <span class="mono">vless://...</span> ключ и сохрани.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>4) Подключись</h2>
+      <ol>
+        <li>Выбери добавленный профиль.</li>
+        <li>Включи подключение.</li>
+        <li>Проверь, что интернет работает через VPN.</li>
+      </ol>
+    </div>
+  </div>
+</body>
+</html>
+
