@@ -309,16 +309,14 @@
     <div class="shell-header">
       <div class="shell-title">
         <div class="shell-title-main">
-          VPN Control
-          <span class="shell-pill">Web Panel</span>
+          x2VPN panel
+          <span class="shell-pill">Личный кабинет</span>
         </div>
-        <div class="shell-title-sub">
-          Управление доступом к VLESS/VMess в один тап
-        </div>
+        <div class="shell-title-sub"></div>
       </div>
       <div class="shell-badge">
-        <span class="shell-badge-dot"></span>
-        Панель подключена
+        <span class="shell-badge-dot" id="panelDot"></span>
+        <span id="panelStatus">Активно</span>
       </div>
     </div>
 
@@ -348,8 +346,8 @@
 
         <div class="card">
           <div class="card-main">
-            <div class="card-label">Твой доступ</div>
-            <div class="card-value" id="subLine">Нет активного ключа</div>
+            <div class="card-label">Твоя подписка</div>
+            <div class="card-value" id="subLine">Не оформлена</div>
           </div>
           <div class="pill-soft">
             VLESS
@@ -394,6 +392,8 @@
     const guideBtn = document.getElementById("guideBtn");
     const note = document.getElementById("note");
     const pingValue = document.getElementById("pingValue");
+    const panelStatus = document.getElementById("panelStatus");
+    const panelDot = document.getElementById("panelDot");
 
     function setBusy(isBusy) {
       createBtn.disabled = isBusy;
@@ -423,6 +423,8 @@
           hello.textContent = "Вход через Telegram не выполнен";
           statusLine.textContent = "Открой кабинет из приложения Telegram";
           note.textContent = "Для безопасности ключи выдаются только авторизованным пользователям Telegram.";
+          panelStatus.textContent = "Не активно";
+          panelDot.style.opacity = "0.4";
           return;
         }
 
@@ -436,23 +438,25 @@
 
         if (data.disabled) {
           statusLine.textContent = "Доступ отключён администратором";
-          subLine.textContent = "Ключ недоступен";
+          subLine.textContent = "Подписка отключена";
           keyEl.value = "";
           createBtn.textContent = "Доступ отключён";
           createBtn.disabled = true;
           createBtn.style.opacity = "0.55";
           note.textContent = data.disabled_reason ? ("Причина: " + data.disabled_reason) : "Обратись в поддержку.";
+          panelStatus.textContent = "Не активно";
+          panelDot.style.opacity = "0.4";
           return;
         }
 
         if (data.vless_uri) {
-          subLine.textContent = "Подключение активно";
+          subLine.textContent = "Активна • 30 дней";
           keyEl.value = data.vless_uri;
           createBtn.textContent = "Переиздать (пока не нужно)";
           createBtn.disabled = true;
           createBtn.style.opacity = "0.6";
         } else {
-          subLine.textContent = "Ключ ещё не создан";
+          subLine.textContent = "Не оформлена";
           keyEl.value = "";
           createBtn.textContent = "Создать VPN‑ключ";
         }
@@ -460,6 +464,8 @@
         statusLine.textContent = "Ошибка авторизации";
         hello.textContent = "Не удалось загрузить данные.";
         note.textContent = "Не удалось авторизоваться. Проверь вход в Telegram и попробуй снова.";
+        panelStatus.textContent = "Не активно";
+        panelDot.style.opacity = "0.4";
       }
     }
 
